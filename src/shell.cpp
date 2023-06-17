@@ -2,6 +2,9 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 /**
  * Function to split a string into tokens based on delimiter
@@ -26,18 +29,55 @@ std::vector<std::string> split(const std::string& str, char delimiter) {
  * @param command: The command to be executed
  * @param args: The arguments passed to the command
  * @param runInBackground: Flag indicating if the command should run in the background
+ * @param inputRedirect: File path for input redirection (STDIN)
+ * @param outputRedirect: File path for output redirection (STDOUT)
  */
-void executeCommand(const std::string& command, const std::vector<std::string>& args, bool runInBackground) {
-    std::ostringstream commandStream;
-    commandStream << command;
-    for (const std::string& arg : args) {
-        commandStream << ' ' << arg;
-    }
-    std::string commandString = commandStream.str();
+void executeCommand(const std::string& command, const std::vector<std::string>& args, bool runInBackground,
+    const std::string& inputRedirect, const std::string& outputRedirect) {
+    pid_t pid = fork();
+    if (pid == -1) {
+        std::cerr << "Failed to create child process." << std::endl;
+        return;
+    } else if (pid == 0) {
+        // Child process
 
-    int status = system(commandString.c_str());
-    if (status == -1) {
-        std::cerr << "Failed to execute command: " << commandString << std::endl;
+        // Input redirection
+        if (!inputRedirect.empty()) {
+            int inputFile = open(inputRedirect.c_str(), O_RDONLY);
+            if (inputFile == -1) {
+                std::cerr << "Failed to open input file: " << inputRedirect << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            dup2(inputFile, STDIN_FILENO);
+            close(inputFile);
+        }
+
+        // Output redirection
+        if (!outputRedirect.empty()) {
+            int outputFile = open(outputRedirect.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+            if (outputFile == -1) {
+                std::cerr << "Failed to open output file: " << outputRedirect << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            dup2(outputFile, STDOUT_FILENO);
+            close(outputFile);
+        }
+
+        // Convert vector of strings to array of C-style strings
+        std::vector<char*> cArgs;
+        for (const std::string& arg : args) {
+            cArgs.push_back(const_cast<char*>(arg.c_str()));
+        }
+        cArgs.push_back(nullptr); // Null-terminate the array
+
+        execvp(command.c_str(), cArgs.data());
+        std::cerr << "Failed to execute command: " << command << std::endl;
+        exit(EXIT_FAILURE);
+    } else {
+        // Parent process
+        if (!runInBackground) {
+            waitpid(pid, nullptr, 0);
+        }
     }
 }
 
@@ -106,8 +146,23 @@ int main() {
             continue;
         }
 
+        // Input/output redirection
+        std::string inputRedirect;
+        std::string outputRedirect;
+        for (size_t i = 0; i < args.size(); i++) {
+            if (args[i] == "<" && i + 1 < args.size()) {
+                inputRedirect = args[i + 1];
+                args.erase(args.begin() + i, args.begin() + i + 2);
+                i--;
+            } else if (args[i] == ">" && i + 1 < args.size()) {
+                outputRedirect = args[i + 1];
+                args.erase(args.begin() + i, args.begin() + i + 2);
+                i--;
+            }
+        }
+
         // Execute the command
-        executeCommand(command, args, runInBackground);
+        executeCommand(command, args, runInBackground, inputRedirect, outputRedirect);
 
         // Add the background process to the list
         if (runInBackground) {
