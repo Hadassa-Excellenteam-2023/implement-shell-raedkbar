@@ -1,7 +1,10 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <sstream>
+#include <cstring>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 /**
  * Function to split a string into tokens based on delimiter
@@ -28,16 +31,30 @@ std::vector<std::string> split(const std::string& str, char delimiter) {
  * @param runInBackground: Flag indicating if the command should run in the background
  */
 void executeCommand(const std::string& command, const std::vector<std::string>& args, bool runInBackground) {
-    std::ostringstream commandStream;
-    commandStream << command;
-    for (const std::string& arg : args) {
-        commandStream << ' ' << arg;
-    }
-    std::string commandString = commandStream.str();
+    pid_t pid = fork();
+    if (pid < 0) {
+        std::cerr << "Failed to create child process." << std::endl;
+        return;
+    } else if (pid == 0) {
+        // Child process
+        char** argv = new char*[args.size() + 2];
+        argv[0] = const_cast<char*>(command.c_str());
+        for (size_t i = 0; i < args.size(); ++i) {
+            argv[i + 1] = const_cast<char*>(args[i].c_str());
+        }
+        argv[args.size() + 1] = nullptr;
 
-    int status = system(commandString.c_str());
-    if (status == -1) {
-        std::cerr << "Failed to execute command: " << commandString << std::endl;
+        // Execute the command
+        execvp(command.c_str(), argv);
+        std::cerr << "Failed to execute command: " << command << std::endl;
+        delete[] argv;
+        exit(EXIT_FAILURE);
+    } else {
+        // Parent process
+        if (!runInBackground) {
+            int status;
+            waitpid(pid, &status, 0);
+        }
     }
 }
 
@@ -67,9 +84,13 @@ void removeBackgroundSymbol(std::vector<std::string>& args) {
  *
  * @param backgroundProcesses: The list of background process IDs
  */
-void printBackgroundJobs(const std::vector<int>& backgroundProcesses) {
-    for (int pid : backgroundProcesses) {
-        std::cout << "PID: " << pid << std::endl;
+void printBackgroundJobs(const std::vector<pid_t>& backgroundProcesses) {
+    for (const pid_t& pid : backgroundProcesses) {
+        std::string cmdLine;
+        std::ifstream cmdLineFile("/proc/" + std::to_string(pid) + "/cmdline");
+        std::getline(cmdLineFile, cmdLine);
+        cmdLineFile.close();
+        std::cout << "PID: " << pid << "  Command: " << cmdLine << std::endl;
     }
 }
 
@@ -78,7 +99,7 @@ void printBackgroundJobs(const std::vector<int>& backgroundProcesses) {
  */
 int main() {
     std::string commandLine;
-    std::vector<int> backgroundProcesses;
+    std::vector<pid_t> backgroundProcesses;
 
     while (true) {
         std::cout << "shell> ";
@@ -111,9 +132,17 @@ int main() {
 
         // Add the background process to the list
         if (runInBackground) {
-            backgroundProcesses.push_back(0); // Change 0 to the actual process ID
+            pid_t pid = fork();
+            if (pid < 0) {
+                std::cerr << "Failed to create child process." << std::endl;
+            } else if (pid > 0) {
+                backgroundProcesses.push_back(pid);
+            } else {
+                // Child process
+                break;
+            }
         }
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
